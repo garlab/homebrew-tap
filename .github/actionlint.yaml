@@ -1,0 +1,3 @@
+config-variables:
+  - HOMEBREW_APP_ID
+  - HOMEBREW_BOT_LOGIN

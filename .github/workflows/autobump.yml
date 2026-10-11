@@ -1,41 +1,53 @@
-# brew tap-new uses this file to generate an autobump workflow for the new tap
-name: brew bump
+name: Update Probl
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/autobump.yml
+  repository_dispatch:
+    types: [probl-release]
   schedule:
-    # Every day at 23:35 UTC
-    - cron: 35 23 * * *
+    - cron: '23 * * * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Stable release tag (empty means latest)
+        required: false
+        type: string
 
-permissions: {}
+permissions:
+  contents: read
 
-defaults:
-  run:
-    shell: bash -xeuo pipefail {0}
+concurrency:
+  group: probl-update
+  cancel-in-progress: false
 
 jobs:
-  autobump:
+  update:
+    if: github.repository == 'garlab/homebrew-tap' && github.ref == 'refs/heads/main'
+    environment: homebrew
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
     steps:
-      - name: Set up Homebrew
-        id: set-up-homebrew
-        uses: Homebrew/actions/setup-homebrew@e99025eb970cfa124b8284a35463d87426917478 # 2026.09.28.1
-
-      - name: Set up git
-        id: git_setup
-        uses: Homebrew/actions/git-user-config@e99025eb970cfa124b8284a35463d87426917478 # 2026.09.28.1
-
-      - name: Bump formulae
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Verify immutable release and build provenance
+        id: prepare
         env:
-          HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_GIT_COMMITTER_NAME: ${{ steps.git_setup.outputs.name }}
-          HOMEBREW_GIT_COMMITTER_EMAIL: ${{ steps.git_setup.outputs.email }}
-          TAP_NAME: ${{ steps.set-up-homebrew.outputs.tap-name }}
-        run: brew bump --no-fork --open-pr --formulae --bump-synced --tap="$TAP_NAME"
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag || github.event.client_payload.tag }}
+        run: python3 ci/releases.py prepare "$RUNNER_TEMP/probl-update.json"
+      # Do not make write credentials available while fetching upstream assets.
+      - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        if: steps.prepare.outputs.ready == 'true'
+        id: app
+        with:
+          app-id: ${{ vars.HOMEBREW_APP_ID }}
+          private-key: ${{ secrets.HOMEBREW_APP_PRIVATE_KEY }}
+          owner: garlab
+          repositories: homebrew-tap
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Open idempotent formula update PR
+        if: steps.prepare.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: python3 ci/releases.py open-pr "$RUNNER_TEMP/probl-update.json"
