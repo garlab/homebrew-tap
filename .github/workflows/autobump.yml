@@ -36,7 +36,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag || github.event.client_payload.tag }}
         run: python3 ci/releases.py prepare "$RUNNER_TEMP/probl-update.json"
       # Do not make write credentials available while fetching upstream assets.
-      - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         if: steps.prepare.outputs.ready == 'true'
         id: app
         with:
