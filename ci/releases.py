@@ -46,6 +46,25 @@ def api(path, data=None, method=None, missing=False):
         raise
 
 
+def find_release(tag):
+    # The by-tag endpoint only returns published releases. The authenticated
+    # list endpoint also includes drafts, including those from a failed run.
+    published = api(f'repos/{TAP}/releases/tags/{tag}', missing=True)
+    if published is not None:
+        return published
+    matches = []
+    page = 1
+    while True:
+        releases = api(f'repos/{TAP}/releases?per_page=100&page={page}')
+        matches.extend(item for item in releases if item['tag_name'] == tag)
+        if len(releases) < 100:
+            break
+        page += 1
+    if len(matches) > 1:
+        raise ValueError(f'Multiple releases found for {tag}; resolve duplicate drafts before retrying')
+    return matches[0] if matches else None
+
+
 def version(tag):
     require(isinstance(tag, str) and re.fullmatch(TAG, tag), 'Invalid stable release tag')
     return tuple(map(int, tag[1:].split('.')))
@@ -285,12 +304,13 @@ def bottle_assets(folder, tag):
 def upload_bottles(folder, tag, base):
     assets = bottle_assets(folder, tag)
     release_tag = 'probl-' + tag[1:]
-    existing = api(f'repos/{TAP}/releases/tags/{release_tag}', missing=True)
+    existing = find_release(release_tag)
     if not existing:
         subprocess.run(['gh', 'release', 'create', release_tag, '--repo', TAP,
                         '--target', base, '--draft', '--title', 'Probl ' + tag[1:],
                         '--notes', f'Bottles for https://github.com/{UPSTREAM}/releases/tag/{tag}'], check=True)
-        existing = api(f'repos/{TAP}/releases/tags/{release_tag}')
+        existing = find_release(release_tag)
+    require(existing is not None, 'Created bottle release is not visible; check token access before retrying')
     known = {asset['name'] for asset in existing['assets']}
     require(known <= assets.keys(), 'Bottle release contains unexpected assets')
     for name, asset in assets.items():
@@ -312,7 +332,9 @@ def upload_bottles(folder, tag, base):
 def publish_bottles(tag):
     version(tag)
     release_tag = 'probl-' + tag[1:]
-    if api(f'repos/{TAP}/releases/tags/{release_tag}')['draft']:
+    existing = find_release(release_tag)
+    require(existing is not None, 'Bottle release does not exist; upload bottles before publishing')
+    if existing['draft']:
         subprocess.run(['gh', 'release', 'edit', release_tag, '--repo', TAP, '--draft=false'], check=True)
 
 
