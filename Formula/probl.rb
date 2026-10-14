@@ -1,8 +1,8 @@
 class Probl < Formula
   desc "Probabilistic programming language for models and forecasts"
   homepage "https://probl.dev"
-  url "https://github.com/garlab/probl/archive/refs/tags/v0.2.1.tar.gz"
-  sha256 "4bb43f23563b1531c80d68bb7d6eaec85cd1025c9b37c61b706db1a641280591"
+  url "https://github.com/garlab/probl/releases/download/v0.3.0/probl-0.3.0-source.tar.gz"
+  sha256 "43cb9c274cc76419ec9ffa4aa22ca329c6262ca9f571403706ab229a498aa1e0"
   license any_of: ["MIT", "Apache-2.0"]
 
   depends_on "rust" => :build
