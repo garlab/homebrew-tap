@@ -311,37 +311,52 @@ def upload_bottles(folder, tag, base):
     assets = bottle_assets(folder, tag)
     release_tag = 'probl-' + tag[1:]
     existing = find_release(release_tag)
-    if not existing:
-        subprocess.run(['gh', 'release', 'create', release_tag, '--repo', TAP,
-                        '--target', base, '--draft', '--title', 'Probl ' + tag[1:],
-                        '--notes', f'Bottles for https://github.com/{UPSTREAM}/releases/tag/{tag}'], check=True)
-        existing = find_release(release_tag)
-    require(existing is not None, 'Created bottle release is not visible; check token access before retrying')
-    known = {asset['name'] for asset in existing['assets']}
-    require(known <= assets.keys(), 'Bottle release contains unexpected assets')
+    if existing is None:
+        # Use the creation response directly: a new draft may not appear in
+        # release listings immediately, and has no published tag URL yet.
+        existing = api(f'repos/{TAP}/releases', data={
+            'tag_name': release_tag, 'target_commitish': base, 'draft': True,
+            'name': 'Probl ' + tag[1:],
+            'body': f'Bottles for https://github.com/{UPSTREAM}/releases/tag/{tag}',
+        }, method='POST')
+    require(existing['tag_name'] == release_tag and not existing['prerelease'], 'Unexpected bottle release identity')
+    release_id = existing['id']
+    require(type(release_id) is int and release_id > 0, 'Invalid bottle release ID')
+    known = {asset['name']: asset for asset in existing['assets']}
+    require(known.keys() <= assets.keys(), 'Bottle release contains unexpected assets')
     for name, asset in assets.items():
         if name in known:
             with tempfile.TemporaryDirectory() as temporary:
-                subprocess.run(['gh', 'release', 'download', release_tag, '--repo', TAP,
-                                '--pattern', name, '--dir', temporary], check=True)
-                require(hashlib.sha256((Path(temporary)/name).read_bytes()).hexdigest() == asset['sha256'],
+                downloaded = Path(temporary)/name
+                with downloaded.open('wb') as destination:
+                    subprocess.run(['gh', 'api', f'repos/{TAP}/releases/assets/{known[name]["id"]}',
+                                    '-H', 'Accept: application/octet-stream'], stdout=destination, check=True)
+                require(hashlib.sha256(downloaded.read_bytes()).hexdigest() == asset['sha256'],
                         'Existing bottle differs; refusing to overwrite it')
         else:
             require(existing['draft'], 'Published bottle release is incomplete; refusing to modify it')
-            # gh uses the local basename as the release asset name.
-            with tempfile.TemporaryDirectory() as temporary:
-                path = Path(temporary)/name
-                path.write_bytes(asset['path'].read_bytes())
-                subprocess.run(['gh', 'release', 'upload', release_tag, str(path), '--repo', TAP], check=True)
+            # bottle_assets validates names before they are used in the URL.
+            subprocess.run(['gh', 'api', '--method', 'POST',
+                            f'https://uploads.github.com/repos/{TAP}/releases/{release_id}/assets?name={name}',
+                            '-H', 'Content-Type: application/octet-stream', '--input', str(asset['path'])],
+                           stdout=subprocess.DEVNULL, check=True)
+    output(release_id=release_id)
 
 
-def publish_bottles(tag):
+def publish_bottles(tag, release_id):
     version(tag)
-    release_tag = 'probl-' + tag[1:]
-    existing = find_release(release_tag)
-    require(existing is not None, 'Bottle release does not exist; upload bottles before publishing')
+    require(re.fullmatch(r'[1-9][0-9]*', str(release_id)), 'Invalid bottle release ID')
+    path = f'repos/{TAP}/releases/{release_id}'
+    existing = api(path)
+    require(existing['tag_name'] == 'probl-' + tag[1:] and not existing['prerelease'],
+            'Unexpected bottle release identity')
+    expected = {f'probl-{tag[1:]}.{platform}.bottle.tar.gz'
+                for platform in ['arm64_tahoe', 'x86_64_linux']}
+    require({asset['name'] for asset in existing['assets']} == expected and
+            all(asset['state'] == 'uploaded' for asset in existing['assets']),
+            'Bottle release is incomplete; refusing to publish it')
     if existing['draft']:
-        subprocess.run(['gh', 'release', 'edit', release_tag, '--repo', TAP, '--draft=false'], check=True)
+        api(path, data={'draft': False}, method='PATCH')
 
 
 if __name__ == '__main__':
@@ -357,7 +372,7 @@ if __name__ == '__main__':
     elif command == 'upload-bottles':
         upload_bottles(Path(sys.argv[2]), sys.argv[3], sys.argv[4])
     elif command == 'publish-bottles':
-        publish_bottles(sys.argv[2])
+        publish_bottles(sys.argv[2], sys.argv[3])
     elif command == 'recheck':
         pr = api(f'repos/{TAP}/pulls/{sys.argv[2]}')
         require(pr['state'] == 'open' and pr['head']['sha'] == sys.argv[3] and

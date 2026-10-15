@@ -98,6 +98,7 @@ jobs:
           brew bottle --merge --write ./*.bottle.json
           brew audit --skip-style garlab/tap/probl
       - name: Upload bottles to a draft (verify existing files on retry)
+        id: upload
         if: steps.gate.outputs.ready == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -123,7 +124,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.gate.outputs.tag }}
-        run: python3 "$RUNNER_TEMP/probl-release-gate.py" publish-bottles "$TAG"
+          RELEASE_ID: ${{ steps.upload.outputs.release_id }}
+        run: python3 "$RUNNER_TEMP/probl-release-gate.py" publish-bottles "$TAG" "$RELEASE_ID"
       - name: Push the verified publication without rebasing or force
         if: steps.gate.outputs.ready == 'true'
         env:

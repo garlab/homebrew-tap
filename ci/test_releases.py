@@ -41,32 +41,57 @@ class PolicyTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Multiple releases'):
                 policy.find_release('v1.2.3')
 
-    def test_bottle_draft_creation_upload_and_publication(self):
+    def test_bottle_publication_uses_creation_id_when_draft_is_not_listed(self):
         import tempfile
-        draft = {'id': 7, 'tag_name': 'probl-0.2.2', 'draft': True, 'assets': []}
-        created = False
+        draft = {'id': 7, 'tag_name': 'probl-0.2.2', 'draft': True,
+                 'prerelease': False, 'assets': []}
         def api(path, **kwargs):
-            if path == f'repos/{policy.TAP}/releases/tags/probl-0.2.2':
-                return None
-            if path == f'repos/{policy.TAP}/releases?per_page=100&page=1':
-                return [draft] if created else []
+            if path == f'repos/{policy.TAP}/releases' and kwargs.get('method') == 'POST':
+                self.assertEqual(kwargs['data']['tag_name'], draft['tag_name'])
+                self.assertEqual(kwargs['data']['target_commitish'], BASE)
+                self.assertTrue(kwargs['data']['draft'])
+                return copy.deepcopy(draft)
+            if path == f'repos/{policy.TAP}/releases/7':
+                return draft
             raise AssertionError(path)
         def command(args, **kwargs):
-            nonlocal created
-            if args[1:3] == ['release', 'create']:
-                self.assertFalse(created)
-                created = True
+            self.assertIn('https://uploads.github.com/', args[4])
+            self.assertIn('/releases/7/assets?name=', args[4])
+            self.assertEqual(args[1:4], ['api', '--method', 'POST'])
+            draft['assets'].append({'name': args[4].split('?name=')[1], 'state': 'uploaded'})
         with tempfile.TemporaryDirectory() as temporary:
             folder = Path(temporary)
             self.bottles(folder)
-            with patch.object(policy, 'api', side_effect=api), \
+            with patch.object(policy, 'find_release', return_value=None) as find, \
+                 patch.object(policy, 'api', side_effect=api) as request, \
+                 patch.object(policy, 'output') as output, \
                  patch.object(policy.subprocess, 'run', side_effect=command) as run:
                 policy.upload_bottles(folder, TAG, BASE)
-                policy.publish_bottles(TAG)
-                commands = [c.args[0] for c in run.call_args_list]
-                self.assertEqual(sum(args[2] == 'upload' for args in commands), 2)
-                self.assertEqual(commands[-1][1:4], ['release', 'edit', 'probl-0.2.2'])
-                self.assertIn('--draft=false', commands[-1])
+                output.assert_called_once_with(release_id=7)
+                policy.publish_bottles(TAG, '7')
+                find.assert_called_once_with('probl-0.2.2')
+                self.assertEqual(run.call_count, 2)
+                request.assert_called_with(f'repos/{policy.TAP}/releases/7', data={'draft': False}, method='PATCH')
+
+    def test_publication_rejects_wrong_identity_or_incomplete_assets(self):
+        valid = {'tag_name': 'probl-0.2.2', 'draft': True, 'prerelease': False,
+                 'assets': [{'name': f'probl-0.2.2.{platform}.bottle.tar.gz', 'state': 'uploaded'}
+                            for platform in ['arm64_tahoe', 'x86_64_linux']]}
+        for mutation in [lambda d: d.update(tag_name='probl-0.2.3'),
+                         lambda d: d.update(prerelease=True),
+                         lambda d: d['assets'].pop(),
+                         lambda d: d['assets'][0].update(state='starter')]:
+            changed = copy.deepcopy(valid)
+            mutation(changed)
+            with patch.object(policy, 'api', return_value=changed) as api, self.assertRaises(ValueError):
+                policy.publish_bottles(TAG, '7')
+            self.assertEqual(api.call_count, 1)
+        with patch.object(policy, 'api') as api, self.assertRaisesRegex(ValueError, 'Invalid bottle release ID'):
+            policy.publish_bottles(TAG, '../7')
+        api.assert_not_called()
+        with patch.object(policy, 'api', return_value={**valid, 'draft': False}) as api:
+            policy.publish_bottles(TAG, '7')
+            self.assertEqual(api.call_count, 1)
 
     def test_manifest_rejects_substitution_and_paths(self):
         policy.validate_manifest(MANIFEST, TAG, COMMIT)
@@ -238,22 +263,28 @@ class PolicyTests(unittest.TestCase):
             self.bottles(folder)
             assets = policy.bottle_assets(folder, TAG)
             first = next(iter(assets))
+            existing = {'id': 7, 'tag_name': 'probl-0.2.2', 'prerelease': False,
+                        'draft': True, 'assets': [{'id': 9, 'name': first}]}
             def command(args, **kwargs):
-                if args[1:3] == ['release', 'download']:
-                    destination = Path(args[args.index('--dir') + 1])/first
-                    destination.write_bytes(assets[first]['path'].read_bytes())
-            with patch.object(policy, 'find_release', return_value={'draft': True, 'assets': [{'name': first}]}), \
+                if '--method' not in args:
+                    self.assertEqual(args[2], f'repos/{policy.TAP}/releases/assets/9')
+                    kwargs['stdout'].write(assets[first]['path'].read_bytes())
+            with patch.object(policy, 'find_release', return_value=existing), \
+                 patch.object(policy, 'output') as output, \
                  patch.object(policy.subprocess, 'run', side_effect=command) as run:
                 policy.upload_bottles(folder, TAG, BASE)
-                uploads = [c.args[0] for c in run.call_args_list if c.args[0][1:3] == ['release', 'upload']]
+                uploads = [c.args[0] for c in run.call_args_list if '--method' in c.args[0]]
                 self.assertEqual(len(uploads), 1)
-                self.assertTrue(all('--clobber' not in args for args in uploads))
+                self.assertIn('/releases/7/assets?name=', uploads[0][4])
+                output.assert_called_once_with(release_id=7)
             def tampered(args, **kwargs):
-                (Path(args[args.index('--dir') + 1])/first).write_bytes(b'wrong')
-            with patch.object(policy, 'find_release', return_value={'draft': True, 'assets': [{'name': first}]}), \
+                kwargs['stdout'].write(b'wrong')
+            with patch.object(policy, 'find_release', return_value=existing), \
                  patch.object(policy.subprocess, 'run', side_effect=tampered), \
+                 patch.object(policy, 'output') as output, \
                  self.assertRaisesRegex(ValueError, 'refusing to overwrite'):
                 policy.upload_bottles(folder, TAG, BASE)
+            output.assert_not_called()
 
     def test_gate_names_missing_expired_and_previous_attempt_artifacts(self):
         for kind in ['missing', 'expired', 'old-attempt']:
