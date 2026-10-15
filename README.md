@@ -14,8 +14,11 @@ brew upgrade probl
 ```
 
 The formula builds from the published Probl source release. Automated updates
-also produce prebuilt packages (Homebrew's *bottles*) for Apple Silicon macOS,
-Intel macOS and Linux x86-64. Other supported platforms can build from source.
+also produce prebuilt packages (Homebrew's *bottles*) for Apple Silicon macOS
+and Linux x86-64. Intel macOS has no prebuilt bottle: Homebrew no longer
+provides the Intel Rust bottle needed by our build jobs. A source installation
+may also need to build Rust; alternatively, install Rust with rustup and run
+`cargo install probl --locked`. Other supported platforms can build from source.
 The initial v0.2.1 formula is available as a source build.
 
 See [probl.dev](https://probl.dev) for the language guide and examples.

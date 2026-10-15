@@ -64,7 +64,7 @@ class PolicyTests(unittest.TestCase):
                 policy.upload_bottles(folder, TAG, BASE)
                 policy.publish_bottles(TAG)
                 commands = [c.args[0] for c in run.call_args_list]
-                self.assertEqual(sum(args[2] == 'upload' for args in commands), 3)
+                self.assertEqual(sum(args[2] == 'upload' for args in commands), 2)
                 self.assertEqual(commands[-1][1:4], ['release', 'edit', 'probl-0.2.2'])
                 self.assertIn('--draft=false', commands[-1])
 
@@ -132,7 +132,7 @@ class PolicyTests(unittest.TestCase):
             f'repos/{policy.UPSTREAM}/releases/latest': {'tag_name': TAG},
             f'repos/{policy.TAP}/actions/workflows/tests.yml/runs?event=pull_request&head_sha={HEAD}&per_page=100': {'workflow_runs': [run]},
             f'repos/{policy.TAP}/actions/runs/123/artifacts': {'artifacts': [
-                {'name': 'bottles_123_1_'+os, 'expired': False} for os in ['macos-26', 'macos-15-intel', 'ubuntu-latest']]},
+                {'name': 'bottles_123_1_'+os, 'expired': False} for os in ['macos-26', 'ubuntu-latest']]},
         }
         files = {(policy.FORMULA, BASE): source, (policy.FORMULA, HEAD): formula,
                  (policy.METADATA, HEAD): json.dumps(MANIFEST)}
@@ -184,7 +184,7 @@ class PolicyTests(unittest.TestCase):
     def bottles(self, folder):
         import hashlib
         paths = []
-        for platform in ['arm64_tahoe', 'sequoia', 'x86_64_linux']:
+        for platform in ['arm64_tahoe', 'x86_64_linux']:
             local = f'probl--0.2.2.{platform}.bottle.tar.gz'
             remote = local.replace('probl--', 'probl-', 1)
             (folder/local).write_bytes(platform.encode())
@@ -204,7 +204,7 @@ class PolicyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             folder = Path(temporary)
             paths = self.bottles(folder)
-            self.assertEqual(len(policy.bottle_assets(folder, TAG)), 3)
+            self.assertEqual(len(policy.bottle_assets(folder, TAG)), 2)
             data = json.loads(paths[0].read_text())
             data['garlab/tap/probl']['formula']['path'] = '../malicious.rb'
             paths[0].write_text(json.dumps(data))
@@ -213,6 +213,22 @@ class PolicyTests(unittest.TestCase):
             self.bottles(folder)
             next(folder.glob('*.tar.gz')).write_bytes(b'tampered')
             with self.assertRaisesRegex(ValueError, 'checksum'):
+                policy.bottle_assets(folder, TAG)
+
+    def test_bottles_require_each_supported_platform(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            paths = self.bottles(folder)
+            paths[-1].unlink()
+            with self.assertRaisesRegex(ValueError, 'Expected Apple Silicon'):
+                policy.bottle_assets(folder, TAG)
+            paths = self.bottles(folder)
+            data = json.loads(paths[-1].read_text())
+            bottle = data['garlab/tap/probl']['bottle']
+            bottle['tags']['sequoia'] = bottle['tags'].pop('x86_64_linux')
+            paths[-1].write_text(json.dumps(data))
+            with self.assertRaisesRegex(ValueError, 'Unexpected bottle platform'):
                 policy.bottle_assets(folder, TAG)
 
     def test_bottle_upload_resumes_without_overwriting(self):
@@ -230,7 +246,7 @@ class PolicyTests(unittest.TestCase):
                  patch.object(policy.subprocess, 'run', side_effect=command) as run:
                 policy.upload_bottles(folder, TAG, BASE)
                 uploads = [c.args[0] for c in run.call_args_list if c.args[0][1:3] == ['release', 'upload']]
-                self.assertEqual(len(uploads), 2)
+                self.assertEqual(len(uploads), 1)
                 self.assertTrue(all('--clobber' not in args for args in uploads))
             def tampered(args, **kwargs):
                 (Path(args[args.index('--dir') + 1])/first).write_bytes(b'wrong')
@@ -238,6 +254,19 @@ class PolicyTests(unittest.TestCase):
                  patch.object(policy.subprocess, 'run', side_effect=tampered), \
                  self.assertRaisesRegex(ValueError, 'refusing to overwrite'):
                 policy.upload_bottles(folder, TAG, BASE)
+
+    def test_gate_names_missing_expired_and_previous_attempt_artifacts(self):
+        for kind in ['missing', 'expired', 'old-attempt']:
+            def mutate(responses, files):
+                artifacts = responses[f'repos/{policy.TAP}/actions/runs/123/artifacts']['artifacts']
+                if kind == 'missing':
+                    artifacts.pop()
+                elif kind == 'expired':
+                    artifacts[-1]['expired'] = True
+                else:
+                    artifacts[-1]['name'] = artifacts[-1]['name'].replace('_123_1_', '_123_0_')
+            with self.subTest(kind=kind), self.assertRaisesRegex(ValueError, 'missing=.*bottles_123_1_ubuntu-latest'):
+                self.gate_fixture(mutate)
 
     def test_gate_accepts_only_exact_generated_update(self):
         self.gate_fixture()

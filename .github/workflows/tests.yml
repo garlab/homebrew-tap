@@ -17,7 +17,7 @@ jobs:
   test-bot:
     strategy:
       matrix:
-        os: [ macos-26, macos-15-intel ]
+        os: [ macos-26 ]
         include:
           - os: ubuntu-latest
             container:
@@ -58,6 +58,8 @@ jobs:
         with:
           name: bottles_${{ github.run_id }}_${{ github.run_attempt }}_${{ matrix.os }}
           path: '*.bottle.*'
+          # Release PRs must produce bottles; docs-only PRs need not.
+          if-no-files-found: ${{ startsWith(github.head_ref, 'release/probl-') && 'error' || 'warn' }}
 
   release-policy:
     runs-on: ubuntu-latest

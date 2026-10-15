@@ -266,8 +266,12 @@ def gate(run_id):
     require(runs and max(runs, key=lambda r: r['id'])['id'] == int(run_id), 'A newer CI run exists')
     artifacts = api(f'repos/{TAP}/actions/runs/{run_id}/artifacts')['artifacts']
     prefix = f'bottles_{run_id}_{run["run_attempt"]}_'
-    require({a['name'] for a in artifacts if not a['expired'] and a['name'].startswith(prefix)} ==
-            {prefix + platform for platform in ['macos-26', 'macos-15-intel', 'ubuntu-latest']}, 'Missing bottle artifacts')
+    expected = {prefix + platform for platform in ['macos-26', 'ubuntu-latest']}
+    available = {a['name'] for a in artifacts if not a['expired'] and a['name'].startswith(prefix)}
+    require(available == expected,
+            f'Incomplete bottle artifacts for run {run_id}, attempt {run["run_attempt"]}: '
+            f'missing={sorted(expected - available)}, unexpected={sorted(available - expected)}. '
+            'Check the build and upload steps; rerun all test jobs to produce a complete attempt.')
     output(ready='true', pr=pr['number'], head=head, base=base, tag=tag,
            run_id=run_id, attempt=run['run_attempt'])
 
@@ -285,7 +289,7 @@ def bottle_assets(folder, tag):
                 formula['tap_git_path'] == FORMULA, 'Unexpected formula path or version')
         bottle = data['garlab/tap/probl']['bottle']
         require(type(bottle['rebuild']) is int and bottle['rebuild'] == 0, 'Unexpected bottle rebuild')
-        require(set(bottle['tags']) <= {'arm64_tahoe', 'sequoia', 'x86_64_linux'}, 'Unexpected bottle platform')
+        require(set(bottle['tags']) <= {'arm64_tahoe', 'x86_64_linux'}, 'Unexpected bottle platform')
         require(bottle['root_url'] == root_url, 'Unexpected bottle destination')
         for entry in bottle['tags'].values():
             remote, local = entry['filename'], entry['local_filename']
@@ -297,7 +301,9 @@ def bottle_assets(folder, tag):
             require(sha == entry['sha256'], 'Bottle checksum mismatch')
             require(remote not in assets or assets[remote]['sha256'] == sha, 'Conflicting bottle metadata')
             assets[remote] = {'path': folder/local, 'sha256': sha}
-    require(len(assets) == 3, 'Expected all three platform bottles')
+    expected = {f'probl-{tag[1:]}.{platform}.bottle.tar.gz'
+                for platform in ['arm64_tahoe', 'x86_64_linux']}
+    require(set(assets) == expected, 'Expected Apple Silicon macOS and Linux x86-64 bottles')
     return assets
 
 
