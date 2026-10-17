@@ -5,6 +5,12 @@ class Probl < Formula
   sha256 "50b046da426cc7defc5d2c0cbd5c48602fdac29f86329aae677638ebb97fcd2e"
   license any_of: ["MIT", "Apache-2.0"]
 
+  bottle do
+    root_url "https://github.com/garlab/homebrew-tap/releases/download/probl-0.3.2"
+    sha256 cellar: :any_skip_relocation, arm64_tahoe:  "cfd3154feb912e3ecfdca93df3dad5a0e0435bef66b2f05f303dcb1bdd6bfb35"
+    sha256 cellar: :any,                 x86_64_linux: "e108322850697d61c22b0f5c11bd02cd35f54201a2307074af219e5ac9e337a5"
+  end
+
   depends_on "rust" => :build
 
   deny_network_access!
