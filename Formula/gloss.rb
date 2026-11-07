@@ -1,8 +1,8 @@
 class Gloss < Formula
   desc "Terminal viewer for Markdown, math, diagrams, images, and code"
   homepage "https://github.com/garlab/gloss"
-  url "https://github.com/garlab/gloss/archive/refs/tags/v0.1.0.tar.gz"
-  sha256 "279224870ab8731b797d5b50caed95537428f421676d19bc9c87c14a87e2cb67"
+  url "https://github.com/garlab/gloss/releases/download/v0.1.1/gloss-0.1.1-source.tar.gz"
+  sha256 "87ee340f519eef52517536b675823ffe7a17bbd27ba4771d37d1b17772a72edb"
   license "MIT"
 
   depends_on "rust" => :build
