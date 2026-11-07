@@ -24,14 +24,9 @@ def manifest_for(name):
 
 
 def formula_on_main(name):
-    # Reviewed Ruby as it stands on main. Gloss has no earlier provenance record.
-    if name == NAME:
-        return re.sub(r'^  url .*$', '  url "https://github.com/garlab/probl/archive/refs/tags/v0.2.1.tar.gz"',
-                      (Path(__file__).parents[1]/FORMULA).read_text(), flags=re.M)
-    return (f'class {name.capitalize()} < Formula\n'
-            f'  url "https://github.com/garlab/{name}/archive/refs/tags/v0.2.1.tar.gz"\n'
-            f'  sha256 "{"e" * 64}"\n'
-            f'end\n')
+    # The reviewed Ruby, with a source older than the release under test.
+    return re.sub(r'^  url .*$', f'  url "https://github.com/garlab/{name}/archive/refs/tags/v0.2.1.tar.gz"',
+                  (Path(__file__).parents[1]/policy.formula_path(name)).read_text(), flags=re.M)
 
 
 class PolicyTests(unittest.TestCase):
@@ -364,9 +359,9 @@ class PolicyTests(unittest.TestCase):
                      self.assertRaisesRegex(ValueError, 'Unknown formula'):
                     call(name)
 
-    def test_every_formula_in_the_tap_is_allow_listed(self):
+    def test_allow_list_matches_the_formulae_in_the_tap(self):
         found = {path.stem for path in (Path(__file__).parents[1]/'Formula').glob('*.rb')}
-        self.assertLessEqual(found, set(policy.FORMULAE))
+        self.assertEqual(found, set(policy.FORMULAE))
 
     def test_release_branch_selects_only_allow_listed_formulae(self):
         for name in policy.FORMULAE:

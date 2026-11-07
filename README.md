@@ -60,9 +60,12 @@ explain the source artifacts and distribution pipeline.
    attestation step belongs in that file and not in a reusable workflow.
 2. Add the formula's repository to `FORMULAE` in `ci/releases.py`, and its name to
    the matrix, inputs and dispatch types in `autobump.yml`.
-3. Push a reviewed, source-only `Formula/<name>.rb` directly to `main`, using the
-   tag archive URL of a version older than the first attested release. A PR would
-   not work: `brew test-bot` audits formulae added by a PR with `--new`, whose
-   notability rules reject young or small repositories.
-4. Publish the next release. The updater replaces the formula's source and adds
+3. Add `<name>-*` to the target tags of the `bottle-tag-history` ruleset, which
+   protects bottle tags from being moved or deleted.
+4. Push a reviewed, source-only `Formula/<name>.rb` directly to `main`, using the
+   tag archive URL of a version older than the first attested release. This
+   bypasses the branch rules, and a PR would not work: `brew test-bot` audits
+   formulae added by a PR with `--new`, whose notability rules reject young or
+   small repositories.
+5. Publish the next release. The updater replaces the formula's source and adds
    bottles; a formula's first version has none.
