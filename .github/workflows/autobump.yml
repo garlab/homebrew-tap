@@ -1,12 +1,17 @@
-name: Update Probl
+name: Update formulae
 
 on:
   repository_dispatch:
-    types: [probl-release]
+    types: [gloss-release, probl-release]
   schedule:
     - cron: '23 * * * *'
   workflow_dispatch:
     inputs:
+      formula:
+        description: Formula the tag belongs to
+        required: true
+        type: choice
+        options: [gloss, probl]
       tag:
         description: Stable release tag (empty means latest)
         required: false
@@ -15,15 +20,21 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: probl-update
-  cancel-in-progress: false
-
 jobs:
   update:
     if: github.repository == 'garlab/homebrew-tap' && github.ref == 'refs/heads/main'
     environment: homebrew
     runs-on: ubuntu-latest
+    strategy:
+      # One upstream's failure must not hold back the other's update.
+      fail-fast: false
+      matrix:
+        formula: [gloss, probl]
+    concurrency:
+      group: update-${{ matrix.formula }}
+      cancel-in-progress: false
+    env:
+      FORMULA: ${{ matrix.formula }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -33,8 +44,11 @@ jobs:
         id: prepare
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag || github.event.client_payload.tag }}
-        run: python3 ci/releases.py prepare "$RUNNER_TEMP/probl-update.json"
+          # A tag belongs to one formula. The others check their latest release.
+          RELEASE_TAG: >-
+            ${{ (inputs.formula == matrix.formula && inputs.tag) ||
+                (github.event.action == format('{0}-release', matrix.formula) && github.event.client_payload.tag) || '' }}
+        run: python3 ci/releases.py prepare "$FORMULA" "$RUNNER_TEMP/$FORMULA-update.json"
       # Do not make write credentials available while fetching upstream assets.
       - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         if: steps.prepare.outputs.ready == 'true'
@@ -50,4 +64,4 @@ jobs:
         if: steps.prepare.outputs.ready == 'true'
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
-        run: python3 ci/releases.py open-pr "$RUNNER_TEMP/probl-update.json"
+        run: python3 ci/releases.py open-pr "$RUNNER_TEMP/$FORMULA-update.json"

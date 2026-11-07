@@ -59,7 +59,7 @@ jobs:
           name: bottles_${{ github.run_id }}_${{ github.run_attempt }}_${{ matrix.os }}
           path: '*.bottle.*'
           # Release PRs must produce bottles; docs-only PRs need not.
-          if-no-files-found: ${{ startsWith(github.head_ref, 'release/probl-') && 'error' || 'warn' }}
+          if-no-files-found: ${{ startsWith(github.head_ref, 'release/') && 'error' || 'warn' }}
 
   release-policy:
     runs-on: ubuntu-latest

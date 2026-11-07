@@ -15,16 +15,41 @@ import tempfile
 import urllib.error
 import urllib.request
 
-UPSTREAM = 'garlab/probl'
 TAP = 'garlab/homebrew-tap'
-FORMULA = 'Formula/probl.rb'
-METADATA = 'releases/probl.json'
+# What this tap may publish, and the only repository each formula may come from.
+FORMULAE = {'gloss': 'garlab/gloss', 'probl': 'garlab/probl'}
 TAG = r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'
 
 
 def require(condition, message):
     if not condition:
         raise ValueError(message)
+
+
+def upstream(name):
+    require(name in FORMULAE, 'Unknown formula')
+    return FORMULAE[name]
+
+
+def formula_path(name):
+    upstream(name)
+    return f'Formula/{name}.rb'
+
+
+def metadata_path(name):
+    upstream(name)
+    return f'releases/{name}.json'
+
+
+def release_branch(name, tag, base):
+    return f'release/{name}-{tag}-{base[:12]}'
+
+
+def branch_formula(ref):
+    match = re.fullmatch(r'release/([a-z0-9]+)-v[0-9.]+-[0-9a-f]{12}', ref)
+    require(match is not None, 'Unexpected release branch')
+    upstream(match[1])
+    return match[1]
 
 
 def api(path, data=None, method=None, missing=False):
@@ -70,12 +95,12 @@ def version(tag):
     return tuple(map(int, tag[1:].split('.')))
 
 
-def validate_manifest(manifest, tag, commit):
+def validate_manifest(name, manifest, tag, commit):
     version(tag)
     require(set(manifest) == {'schema', 'tag', 'commit', 'archive', 'sha256'}, 'Unknown manifest schema')
     require(manifest['schema'] == 1 and manifest['tag'] == tag, 'Release identity mismatch')
     require(re.fullmatch(r'[0-9a-f]{40}', commit) and manifest['commit'] == commit, 'Release commit mismatch')
-    require(manifest['archive'] == f'probl-{tag[1:]}-source.tar.gz', 'Unexpected archive name')
+    require(manifest['archive'] == f'{name}-{tag[1:]}-source.tar.gz', 'Unexpected archive name')
     require(re.fullmatch(r'[0-9a-f]{64}', manifest['sha256']), 'Invalid checksum')
 
 
@@ -93,9 +118,9 @@ def formula_version(source):
     return version('v' + match[1])
 
 
-def render(source, manifest):
+def render(name, source, manifest):
     tag = manifest['tag']
-    url = f'https://github.com/{UPSTREAM}/releases/download/{tag}/{manifest["archive"]}'
+    url = f'https://github.com/{upstream(name)}/releases/download/{tag}/{manifest["archive"]}'
     # Only this generated block is discarded; everything else stays byte-for-byte.
     source = re.sub(r'\n  bottle do\n.*?\n  end\n', '', source, flags=re.S)
     source, urls = re.subn(r'^  url "[^"\n]+"$', f'  url "{url}"', source, flags=re.M)
@@ -104,25 +129,26 @@ def render(source, manifest):
     return source
 
 
-def verified_release(tag):
+def verified_release(name, tag):
     version(tag)
-    release = api(f'repos/{UPSTREAM}/releases/tags/{tag}')
+    repository = upstream(name)
+    release = api(f'repos/{repository}/releases/tags/{tag}')
     require(not release['draft'] and not release['prerelease'] and release.get('immutable'),
             'Only published immutable stable releases are accepted')
-    obj = api(f'repos/{UPSTREAM}/git/ref/tags/{tag}')['object']
+    obj = api(f'repos/{repository}/git/ref/tags/{tag}')['object']
     for _ in range(5):
         if obj['type'] != 'tag':
             break
-        obj = api(f'repos/{UPSTREAM}/git/tags/{obj["sha"]}')['object']
+        obj = api(f'repos/{repository}/git/tags/{obj["sha"]}')['object']
     require(obj['type'] == 'commit', 'Tag must resolve to a commit')
     commit = obj['sha']
     with tempfile.TemporaryDirectory() as temporary:
         folder = Path(temporary)
-        subprocess.run(['gh', 'release', 'download', tag, '--repo', UPSTREAM,
+        subprocess.run(['gh', 'release', 'download', tag, '--repo', repository,
                         '--pattern', 'release.json', '--pattern', 'SHA256SUMS',
-                        '--pattern', f'probl-{tag[1:]}-source.tar.gz', '--dir', temporary], check=True)
+                        '--pattern', f'{name}-{tag[1:]}-source.tar.gz', '--dir', temporary], check=True)
         manifest = json.loads((folder / 'release.json').read_text())
-        validate_manifest(manifest, tag, commit)
+        validate_manifest(name, manifest, tag, commit)
         archive = folder / manifest['archive']
         require(hashlib.sha256(archive.read_bytes()).hexdigest() == manifest['sha256'], 'Source checksum mismatch')
         expected = ''.join(f'{hashlib.sha256((folder / name).read_bytes()).hexdigest()}  {name}\n'
@@ -130,8 +156,8 @@ def verified_release(tag):
         require((folder / 'SHA256SUMS').read_text() == expected, 'Checksum manifest mismatch')
         for name in [manifest['archive'], 'release.json', 'SHA256SUMS']:
             subprocess.run(['gh', 'attestation', 'verify', str(folder / name),
-                            '--repo', UPSTREAM,
-                            '--signer-workflow', f'{UPSTREAM}/.github/workflows/release.yml',
+                            '--repo', repository,
+                            '--signer-workflow', f'{repository}/.github/workflows/release.yml',
                             '--source-ref', f'refs/tags/{tag}', '--source-digest', commit,
                             '--signer-digest', commit, '--deny-self-hosted-runners'], check=True)
     return manifest
@@ -143,8 +169,8 @@ def output(**values):
             file.write(f'{key}={value}\n')
 
 
-def prepare(tag, destination):
-    latest = api(f'repos/{UPSTREAM}/releases/latest', missing=True)
+def prepare(name, tag, destination):
+    latest = api(f'repos/{upstream(name)}/releases/latest', missing=True)
     if not latest:
         output(ready='false')
         return
@@ -159,32 +185,34 @@ def prepare(tag, destination):
     if version(tag) < version(latest['tag_name']):
         output(ready='false')
         return
-    manifest = verified_release(tag)
+    manifest = verified_release(name, tag)
     base = api(f'repos/{TAP}/git/ref/heads/main')['object']['sha']
-    source = contents(FORMULA, base)
+    source = contents(formula_path(name), base)
     if version(tag) < formula_version(source):
         output(ready='false')
         return
     if version(tag) == formula_version(source):
-        current = contents(METADATA, base, missing=True)
+        current = contents(metadata_path(name), base, missing=True)
         require(current is not None and json.loads(current) == manifest, 'Same version has different or missing provenance')
         output(ready='false')
         return
-    result = {'base': base, 'manifest': manifest, 'formula': render(source, manifest)}
+    result = {'name': name, 'base': base, 'manifest': manifest, 'formula': render(name, source, manifest)}
     destination.write_text(json.dumps(result))
     output(ready='true')
 
 
 def open_pr(prepared):
-    base, manifest, formula = prepared['base'], prepared['manifest'], prepared['formula']
+    name, base, manifest, formula = prepared['name'], prepared['base'], prepared['manifest'], prepared['formula']
+    path, metadata = formula_path(name), metadata_path(name)
     require(api(f'repos/{TAP}/git/ref/heads/main')['object']['sha'] == base,
             'Main changed during verification; retry the updater')
     tag = manifest['tag']
-    branch = f'release/probl-{tag}-{base[:12]}'
+    branch = release_branch(name, tag, base)
+    title = f'{name} {tag[1:]}'
     tree = api(f'repos/{TAP}/git/trees', {
         'base_tree': api(f'repos/{TAP}/git/commits/{base}')['tree']['sha'],
-        'tree': [{'path': path, 'mode': '100644', 'type': 'blob', 'content': text}
-                 for path, text in [(FORMULA, formula), (METADATA, json.dumps(manifest, sort_keys=True) + '\n')]],
+        'tree': [{'path': file, 'mode': '100644', 'type': 'blob', 'content': text}
+                 for file, text in [(path, formula), (metadata, json.dumps(manifest, sort_keys=True) + '\n')]],
     })
     existing = api(f'repos/{TAP}/git/ref/heads/{branch}', missing=True)
     if existing:
@@ -193,18 +221,18 @@ def open_pr(prepared):
         require(existing_commit['tree']['sha'] == tree['sha'] and
                 [p['sha'] for p in existing_commit['parents']] == [base],
                 'Existing release branch contains unexpected changes')
-        require(contents(FORMULA, head) == formula and
-                contents(METADATA, head) == json.dumps(manifest, sort_keys=True) + '\n',
+        require(contents(path, head) == formula and
+                contents(metadata, head) == json.dumps(manifest, sort_keys=True) + '\n',
                 'Existing release branch was modified')
     else:
-        commit = api(f'repos/{TAP}/git/commits', {'message': f'probl {tag[1:]}',
+        commit = api(f'repos/{TAP}/git/commits', {'message': title,
                                                'tree': tree['sha'], 'parents': [base]})
         api(f'repos/{TAP}/git/refs', {'ref': f'refs/heads/{branch}', 'sha': commit['sha']})
     prs = api(f'repos/{TAP}/pulls?state=open&head=garlab:{branch}&base=main')
     if not prs:
         pr = api(f'repos/{TAP}/pulls', {
-            'title': f'probl {tag[1:]}', 'head': branch, 'base': 'main',
-            'body': f'Update from the verified immutable [Probl {tag} release](https://github.com/{UPSTREAM}/releases/tag/{tag}).\n\n'
+            'title': title, 'head': branch, 'base': 'main',
+            'body': f'Update from the verified immutable [{name.capitalize()} {tag} release](https://github.com/{upstream(name)}/releases/tag/{tag}).\n\n'
                     f'Source commit: `{manifest["commit"]}`. SHA-256 and GitHub build provenance were verified. '
                     'The tap will build, test and publish bottles automatically after CI passes.',
         })
@@ -245,22 +273,26 @@ def gate(run_id):
         return
     base = api(f'repos/{TAP}/git/ref/heads/main')['object']['sha']
     validate_candidate(pr, run, base, bot)
+    # The branch only selects a formula. Everything below is checked against
+    # the allow-list, the provenance record and the upstream release.
+    name = branch_formula(pr['head']['ref'])
+    path, metadata = formula_path(name), metadata_path(name)
     head = pr['head']['sha']
     commit = api(f'repos/{TAP}/git/commits/{head}')
     require([p['sha'] for p in commit['parents']] == [base], 'Release PR must be one commit on current main')
     comparison = api(f'repos/{TAP}/compare/{base}...{head}')
-    require({f['filename'] for f in comparison['files']} == {FORMULA, METADATA} and
+    require({f['filename'] for f in comparison['files']} == {path, metadata} and
             all(f['status'] in ['added', 'modified'] for f in comparison['files']),
             'Release PR contains changes outside the formula and provenance record')
-    manifest = json.loads(contents(METADATA, head))
+    manifest = json.loads(contents(metadata, head))
     tag = manifest['tag']
     version(tag)
-    require(pr['head']['ref'] == f'release/probl-{tag}-{base[:12]}', 'Unexpected release branch')
-    require(manifest == verified_release(tag), 'PR provenance differs from verified release')
-    source = contents(FORMULA, base)
+    require(pr['head']['ref'] == release_branch(name, tag, base), 'Unexpected release branch')
+    require(manifest == verified_release(name, tag), 'PR provenance differs from verified release')
+    source = contents(path, base)
     require(version(tag) > formula_version(source), 'Refusing a duplicate or older formula version')
-    require(contents(FORMULA, head) == render(source, manifest), 'Formula contains unapproved Ruby changes')
-    latest = api(f'repos/{UPSTREAM}/releases/latest')
+    require(contents(path, head) == render(name, source, manifest), 'Formula contains unapproved Ruby changes')
+    latest = api(f'repos/{upstream(name)}/releases/latest')
     require(version(tag) >= version(latest['tag_name']), 'A newer upstream release is available')
     runs = api(f'repos/{TAP}/actions/workflows/tests.yml/runs?event=pull_request&head_sha={head}&per_page=100')['workflow_runs']
     require(runs and max(runs, key=lambda r: r['id'])['id'] == int(run_id), 'A newer CI run exists')
@@ -272,52 +304,54 @@ def gate(run_id):
             f'Incomplete bottle artifacts for run {run_id}, attempt {run["run_attempt"]}: '
             f'missing={sorted(expected - available)}, unexpected={sorted(available - expected)}. '
             'Check the build and upload steps; rerun all test jobs to produce a complete attempt.')
-    output(ready='true', pr=pr['number'], head=head, base=base, tag=tag,
+    output(ready='true', formula=name, pr=pr['number'], head=head, base=base, tag=tag,
            run_id=run_id, attempt=run['run_attempt'])
 
 
-def bottle_assets(folder, tag):
+def bottle_assets(folder, name, tag):
     version(tag)
-    root_url = f'https://github.com/{TAP}/releases/download/probl-{tag[1:]}'
+    path = formula_path(name)
+    key = f'garlab/tap/{name}'
+    root_url = f'https://github.com/{TAP}/releases/download/{name}-{tag[1:]}'
     assets = {}
     for metadata in folder.glob('*.bottle.json'):
         data = json.loads(metadata.read_text())
-        require(set(data) == {'garlab/tap/probl'}, 'Unexpected formula in bottle metadata')
-        formula = data['garlab/tap/probl']['formula']
-        require(formula['name'] == 'probl' and formula['pkg_version'] == tag[1:] and
-                formula['path'] == 'Library/Taps/garlab/homebrew-tap/Formula/probl.rb' and
-                formula['tap_git_path'] == FORMULA, 'Unexpected formula path or version')
-        bottle = data['garlab/tap/probl']['bottle']
+        require(set(data) == {key}, 'Unexpected formula in bottle metadata')
+        formula = data[key]['formula']
+        require(formula['name'] == name and formula['pkg_version'] == tag[1:] and
+                formula['path'] == f'Library/Taps/garlab/homebrew-tap/{path}' and
+                formula['tap_git_path'] == path, 'Unexpected formula path or version')
+        bottle = data[key]['bottle']
         require(type(bottle['rebuild']) is int and bottle['rebuild'] == 0, 'Unexpected bottle rebuild')
         require(set(bottle['tags']) <= {'arm64_tahoe', 'x86_64_linux'}, 'Unexpected bottle platform')
         require(bottle['root_url'] == root_url, 'Unexpected bottle destination')
         for entry in bottle['tags'].values():
             remote, local = entry['filename'], entry['local_filename']
-            require(re.fullmatch(r'probl-' + re.escape(tag[1:]) + r'\.[a-z0-9_]+\.bottle(?:\.[0-9]+)?\.tar\.gz', remote),
+            require(re.fullmatch(re.escape(f'{name}-{tag[1:]}') + r'\.[a-z0-9_]+\.bottle(?:\.[0-9]+)?\.tar\.gz', remote),
                     'Unexpected bottle filename')
-            require(local == remote.replace('probl-', 'probl--', 1) and
+            require(local == remote.replace(f'{name}-', f'{name}--', 1) and
                     not (folder/local).is_symlink(), 'Unsafe local bottle path')
             sha = hashlib.sha256((folder/local).read_bytes()).hexdigest()
             require(sha == entry['sha256'], 'Bottle checksum mismatch')
             require(remote not in assets or assets[remote]['sha256'] == sha, 'Conflicting bottle metadata')
             assets[remote] = {'path': folder/local, 'sha256': sha}
-    expected = {f'probl-{tag[1:]}.{platform}.bottle.tar.gz'
+    expected = {f'{name}-{tag[1:]}.{platform}.bottle.tar.gz'
                 for platform in ['arm64_tahoe', 'x86_64_linux']}
     require(set(assets) == expected, 'Expected Apple Silicon macOS and Linux x86-64 bottles')
     return assets
 
 
-def upload_bottles(folder, tag, base):
-    assets = bottle_assets(folder, tag)
-    release_tag = 'probl-' + tag[1:]
+def upload_bottles(folder, name, tag, base):
+    assets = bottle_assets(folder, name, tag)
+    release_tag = f'{name}-{tag[1:]}'
     existing = find_release(release_tag)
     if existing is None:
         # Use the creation response directly: a new draft may not appear in
         # release listings immediately, and has no published tag URL yet.
         existing = api(f'repos/{TAP}/releases', data={
             'tag_name': release_tag, 'target_commitish': base, 'draft': True,
-            'name': 'Probl ' + tag[1:],
-            'body': f'Bottles for https://github.com/{UPSTREAM}/releases/tag/{tag}',
+            'name': f'{name.capitalize()} {tag[1:]}',
+            'body': f'Bottles for https://github.com/{upstream(name)}/releases/tag/{tag}',
         }, method='POST')
     require(existing['tag_name'] == release_tag and not existing['prerelease'], 'Unexpected bottle release identity')
     release_id = existing['id']
@@ -343,14 +377,15 @@ def upload_bottles(folder, tag, base):
     output(release_id=release_id)
 
 
-def publish_bottles(tag, release_id):
+def publish_bottles(name, tag, release_id):
     version(tag)
+    upstream(name)
     require(re.fullmatch(r'[1-9][0-9]*', str(release_id)), 'Invalid bottle release ID')
     path = f'repos/{TAP}/releases/{release_id}'
     existing = api(path)
-    require(existing['tag_name'] == 'probl-' + tag[1:] and not existing['prerelease'],
+    require(existing['tag_name'] == f'{name}-{tag[1:]}' and not existing['prerelease'],
             'Unexpected bottle release identity')
-    expected = {f'probl-{tag[1:]}.{platform}.bottle.tar.gz'
+    expected = {f'{name}-{tag[1:]}.{platform}.bottle.tar.gz'
                 for platform in ['arm64_tahoe', 'x86_64_linux']}
     require({asset['name'] for asset in existing['assets']} == expected and
             all(asset['state'] == 'uploaded' for asset in existing['assets']),
@@ -362,17 +397,17 @@ def publish_bottles(tag, release_id):
 if __name__ == '__main__':
     command = sys.argv[1]
     if command == 'prepare':
-        prepare(os.environ.get('RELEASE_TAG', ''), Path(sys.argv[2]))
+        prepare(sys.argv[2], os.environ.get('RELEASE_TAG', ''), Path(sys.argv[3]))
     elif command == 'open-pr':
         open_pr(json.loads(Path(sys.argv[2]).read_text()))
     elif command == 'gate':
         gate(sys.argv[2])
     elif command == 'check-bottles':
-        bottle_assets(Path(sys.argv[2]), sys.argv[3])
+        bottle_assets(Path(sys.argv[2]), sys.argv[3], sys.argv[4])
     elif command == 'upload-bottles':
-        upload_bottles(Path(sys.argv[2]), sys.argv[3], sys.argv[4])
+        upload_bottles(Path(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5])
     elif command == 'publish-bottles':
-        publish_bottles(sys.argv[2], sys.argv[3])
+        publish_bottles(sys.argv[2], sys.argv[3], sys.argv[4])
     elif command == 'recheck':
         pr = api(f'repos/{TAP}/pulls/{sys.argv[2]}')
         require(pr['state'] == 'open' and pr['head']['sha'] == sys.argv[3] and
