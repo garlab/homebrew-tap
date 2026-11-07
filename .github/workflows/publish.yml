@@ -59,14 +59,14 @@ jobs:
           repositories: homebrew-tap
           permission-contents: write
           permission-pull-requests: write
-      - uses: Homebrew/actions/setup-homebrew@eb02c69dbabdb66ff183c614f4ce7ab3c077592c # 2026.10.12.1
+      - uses: Homebrew/actions/setup-homebrew@c262868c096d909fc278daa87ed9772967331ea3 # 2026.11.02.1
         if: steps.gate.outputs.ready == 'true'
         id: homebrew
         env:
           GITHUB_SHA: ${{ steps.gate.outputs.base }}
         with:
           token: ${{ steps.app.outputs.token }}
-      - uses: Homebrew/actions/git-user-config@eb02c69dbabdb66ff183c614f4ce7ab3c077592c # 2026.10.12.1
+      - uses: Homebrew/actions/git-user-config@c262868c096d909fc278daa87ed9772967331ea3 # 2026.11.02.1
         if: steps.gate.outputs.ready == 'true'
         id: git
       - name: Publish bottles from the checked PR head
