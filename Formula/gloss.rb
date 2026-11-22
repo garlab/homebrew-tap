@@ -5,6 +5,12 @@ class Gloss < Formula
   sha256 "b0c9eeec49491948f394895ea6da3437bab36770d9929f1546748de44f08e44a"
   license "MIT"
 
+  bottle do
+    root_url "https://github.com/garlab/homebrew-tap/releases/download/gloss-0.2.3"
+    sha256 cellar: :any_skip_relocation, arm64_tahoe:  "197e47c0232cdbb69273e7bcefd8043629aef540aba2167b549cf854116580c7"
+    sha256 cellar: :any,                 x86_64_linux: "16209bbdb2d6d57539cb5b9dc19dc2ed8459b7ea6baf57e4a2a14302e2383364"
+  end
+
   depends_on "rust" => :build
 
   deny_network_access!
